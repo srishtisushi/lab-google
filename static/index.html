@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lab Google</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="search-band" aria-labelledby="title">
+        <div class="search-copy">
+          <p class="eyebrow">Research discovery</p>
+          <h1 id="title">Lab Google</h1>
+          <form id="search-form">
+            <label for="query">Condition or research interest</label>
+            <textarea
+              id="query"
+              name="query"
+              rows="4"
+              placeholder="Example: I am interested in pediatric glioma immune microenvironments and labs testing translational biomarkers or cell therapies."
+              required
+            ></textarea>
+            <div class="controls">
+              <label class="field compact">
+                <span>Rows</span>
+                <input id="limit" name="limit" type="number" min="1" max="15" value="8" />
+              </label>
+              <label class="toggle">
+                <input id="enrich" name="enrich" type="checkbox" checked />
+                <span>Enrich lab pages</span>
+              </label>
+              <label class="toggle">
+                <input id="prestigious" name="prestigious" type="checkbox" />
+                <span>Powerhouse</span>
+              </label>
+              <button id="submit" type="submit">
+                <span>Search</span>
+              </button>
+            </div>
+          </form>
+        </div>
+        <img class="search-image" src="/research-map.png" alt="" />
+      </section>
+
+      <section class="results-band" aria-live="polite">
+        <div class="status-row">
+          <p id="status">Search a topic to build a PI table.</p>
+          <button id="download" type="button" disabled>Export CSV</button>
+        </div>
+        <div id="warnings" class="warnings" hidden></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Person / PI</th>
+                <th scope="col">Title</th>
+                <th scope="col">Institution</th>
+                <th scope="col">Undergraduate or medical student researchers</th>
+                <th scope="col">Email</th>
+                <th scope="col">Research synopsis</th>
+              </tr>
+            </thead>
+            <tbody id="results">
+              <tr class="empty">
+                <td colspan="6">Results will appear here with linked source pages.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
