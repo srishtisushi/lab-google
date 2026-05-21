@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import json
+import os
 import re
 import socket
 import threading
@@ -31,8 +33,10 @@ PUBMED_SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 PUBMED_FETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
 EUROPE_PMC_SEARCH_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 DUCKDUCKGO_URL = "https://html.duckduckgo.com/html/"
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", re.IGNORECASE)
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
+MAX_RESUME_BYTES = 10_000_000
 HOST_REQUEST_INTERVALS = {
     # NIH RePORTER asks API users to post no more than one URL request per second.
     "api.reporter.nih.gov": 1.05,
@@ -263,6 +267,27 @@ def retry_delay(error: urllib.error.HTTPError, attempt: int) -> float:
 def request_json(url: str, payload: Dict[str, object]) -> Dict[str, object]:
     encoded = json.dumps(payload).encode("utf-8")
     return json.loads(request_text(url, data=encoded, max_bytes=8_000_000))
+
+
+def post_json(
+    url: str,
+    payload: Dict[str, object],
+    headers: Optional[Dict[str, str]] = None,
+    timeout: int = 60,
+) -> Dict[str, object]:
+    request_headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    request_headers.update(headers or {})
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=request_headers,
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read(12_000_000).decode("utf-8", errors="replace"))
 
 
 def synopsis_from_text(text: str, fallback: str) -> str:
@@ -569,10 +594,22 @@ def apply_institution_filter(candidates: Iterable[Candidate], prestigious: bool)
     return [candidate for candidate in candidates if is_prestigious_institution(candidate.institution)]
 
 
+def prioritize_email_candidates(candidates: Iterable[Candidate]) -> List[Candidate]:
+    rows = list(candidates)
+    return [row for row in rows if has_email(row)] + [row for row in rows if not has_email(row)]
+
+
+def enrich_rows(rows: Sequence[Candidate], include_lab_pages: bool) -> List[Candidate]:
+    if not rows:
+        return []
+    with ThreadPoolExecutor(max_workers=min(2, len(rows))) as executor:
+        return list(executor.map(lambda row: enrich_candidate(row, include_lab_pages), rows))
+
+
 def search_labs(
     query: str,
     limit: int = 8,
-    enrich: bool = True,
+    enrich: bool = False,
     prestigious: bool = False,
 ) -> Dict[str, object]:
     query = clean_text(query)
@@ -590,11 +627,15 @@ def search_labs(
         candidates.extend(pubmed_candidates(query, min(source_limit, max(limit * 4, 20))))
     except (urllib.error.URLError, socket.timeout, json.JSONDecodeError, ET.ParseError, ValueError):
         warnings.append("PubMed search was unavailable for this request.")
-    rows = unique_candidates(apply_institution_filter(candidates, prestigious), source_limit)
-    rows = rows[: min(source_limit, max(limit * 8, 40))]
-    with ThreadPoolExecutor(max_workers=min(2, len(rows) or 1)) as executor:
-        rows = list(executor.map(lambda row: enrich_candidate(row, enrich), rows))
-    rows = [row for row in rows if has_email(row)][:limit]
+    rows = unique_candidates(apply_institution_filter(candidates, prestigious), source_limit * 2)
+    rows = prioritize_email_candidates(rows)
+    result_rows = enrich_rows([row for row in rows if has_email(row)][:limit], enrich)
+    for start in range(0, len(rows), max(limit, 6)):
+        if len(result_rows) >= limit:
+            break
+        batch = [row for row in rows[start : start + max(limit, 6)] if not has_email(row)]
+        result_rows.extend(row for row in enrich_rows(batch, enrich) if has_email(row))
+    rows = result_rows[:limit]
     return {
         "query": query,
         "count": len(rows),
@@ -603,28 +644,156 @@ def search_labs(
     }
 
 
+def validate_resume_pdf(filename: str, file_data: str) -> tuple[str, bytes]:
+    filename = clean_text(filename) or "resume.pdf"
+    if not filename.lower().endswith(".pdf"):
+        raise ValueError("Upload a PDF resume or CV.")
+    if file_data.startswith("data:"):
+        file_data = file_data.split(",", 1)[-1]
+    try:
+        resume_bytes = base64.b64decode(file_data, validate=True)
+    except (ValueError, TypeError):
+        raise ValueError("The uploaded resume PDF could not be read.") from None
+    if not resume_bytes.startswith(b"%PDF"):
+        raise ValueError("Upload a valid PDF resume or CV.")
+    if len(resume_bytes) > MAX_RESUME_BYTES:
+        raise ValueError("Keep the resume PDF under 10 MB.")
+    return filename, resume_bytes
+
+
+def draft_tone(value: str) -> str:
+    value = clean_text(value).lower()
+    return value if value in {"warm", "friendly", "professional"} else "warm"
+
+
+def build_draft_prompt(researcher: Dict[str, object], interest: str, tone: str = "warm") -> str:
+    name = clean_text(str(researcher.get("name") or "the researcher"))
+    title = clean_text(str(researcher.get("title") or ""))
+    institution = clean_text(str(researcher.get("institution") or ""))
+    email = extract_email(str(researcher.get("email") or ""))
+    synopsis = clean_text(str(researcher.get("synopsis") or ""))
+    project_title = clean_text(str(researcher.get("project_title") or ""))
+    interest = clean_text(interest)
+    tone = draft_tone(tone)
+    return f"""
+Draft a concise cold outreach email from a student to a research PI.
+
+Use the attached resume/CV as evidence about the student's background. Tailor the email to this researcher without inventing credentials, papers read, clinical experiences, or prior relationships. Keep the body around 140 to 220 words. Use a {tone} tone that remains appropriate for research outreach and include a clear ask about research opportunities. Do not use bracket placeholders except for the student's name if the resume does not make it clear.
+
+Researcher:
+- Name: {name}
+- Title: {title or "Unknown"}
+- Institution: {institution or "Unknown"}
+- Email: {email or "Unknown"}
+- Research synopsis: {synopsis or "Unknown"}
+- Relevant source/project: {project_title or "Unknown"}
+- Student search interest: {interest or "Not provided"}
+
+Return only JSON with this exact shape:
+{{"subject":"...", "body":"..."}}
+""".strip()
+
+
+def openai_output_text(response: Dict[str, object]) -> str:
+    top_level = clean_text(str(response.get("output_text") or ""))
+    if top_level:
+        return top_level
+    chunks: List[str] = []
+    for item in response.get("output", []) or []:
+        for content in item.get("content", []) or []:
+            if content.get("type") in {"output_text", "text"}:
+                chunks.append(str(content.get("text") or ""))
+    return "\n".join(chunk for chunk in chunks if chunk).strip()
+
+
+def parse_draft_json(text: str) -> Dict[str, str]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.I)
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise ValueError("The draft response was not readable. Try drafting again.") from exc
+    subject = clean_text(str(payload.get("subject") or ""))
+    body = str(payload.get("body") or "").strip()
+    if not subject or not body:
+        raise ValueError("The draft response was incomplete. Try drafting again.")
+    return {"subject": subject, "body": body}
+
+
+def draft_outreach_email(payload: Dict[str, object]) -> Dict[str, str]:
+    api_key = clean_text(str(payload.get("api_key") or os.environ.get("OPENAI_API_KEY", "")))
+    if not api_key:
+        raise ValueError("Enter an OpenAI API key before drafting.")
+    resume = payload.get("resume") or {}
+    if not isinstance(resume, dict):
+        raise ValueError("Upload a PDF resume or CV before drafting.")
+    filename, resume_bytes = validate_resume_pdf(
+        str(resume.get("filename") or ""),
+        str(resume.get("file_data") or ""),
+    )
+    researcher = payload.get("researcher") or {}
+    if not isinstance(researcher, dict) or not extract_email(str(researcher.get("email") or "")):
+        raise ValueError("Choose a researcher row with an email.")
+    response = post_json(
+        OPENAI_RESPONSES_URL,
+        {
+            "model": os.environ.get("OPENAI_DRAFT_MODEL", "gpt-4o-mini"),
+            "store": False,
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_file",
+                            "filename": filename,
+                            "file_data": base64.b64encode(resume_bytes).decode("ascii"),
+                        },
+                        {
+                            "type": "input_text",
+                            "text": build_draft_prompt(
+                                researcher,
+                                str(payload.get("interest") or ""),
+                                str(payload.get("tone") or ""),
+                            ),
+                        },
+                    ],
+                }
+            ],
+        },
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    return parse_draft_json(openai_output_text(response))
+
+
 class LabGoogleHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
 
     def do_POST(self) -> None:
-        if self.path != "/api/search":
+        if self.path not in {"/api/search", "/api/draft-email"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         try:
             size = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(size) or b"{}")
-            response = search_labs(
-                str(payload.get("query") or ""),
-                int(payload.get("limit") or 8),
-                bool(payload.get("enrich", True)),
-                bool(payload.get("prestigious", False)),
-            )
+            if self.path == "/api/draft-email":
+                response = draft_outreach_email(payload)
+            else:
+                response = search_labs(
+                    str(payload.get("query") or ""),
+                    int(payload.get("limit") or 8),
+                    bool(payload.get("enrich", False)),
+                    bool(payload.get("prestigious", False)),
+                )
             self.send_json(response)
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except RuntimeError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.SERVICE_UNAVAILABLE)
         except Exception as exc:  # Keep the prototype UI readable if upstream pages misbehave.
-            self.send_json({"error": f"Search failed: {exc.__class__.__name__}"}, HTTPStatus.BAD_GATEWAY)
+            action = "Drafting" if self.path == "/api/draft-email" else "Search"
+            self.send_json({"error": f"{action} failed: {exc.__class__.__name__}"}, HTTPStatus.BAD_GATEWAY)
 
     def send_json(self, body: Dict[str, object], status: HTTPStatus = HTTPStatus.OK) -> None:
         encoded = json.dumps(body).encode("utf-8")

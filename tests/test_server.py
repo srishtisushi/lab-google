@@ -1,3 +1,4 @@
+import base64
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -5,6 +6,7 @@ from server import (
     Candidate,
     HostRequestGate,
     apply_institution_filter,
+    build_draft_prompt,
     extract_email,
     has_email,
     institution_from_affiliation,
@@ -14,6 +16,11 @@ from server import (
     synopsis_from_text,
     author_name,
     choose_probable_pi,
+    openai_output_text,
+    parse_draft_json,
+    prioritize_email_candidates,
+    draft_tone,
+    validate_resume_pdf,
 )
 
 
@@ -67,6 +74,13 @@ class SearchHelpersTest(unittest.TestCase):
         rows[0].email = "Not found"
         self.assertFalse(has_email(rows[0]))
 
+    def test_candidates_with_existing_emails_are_prioritized(self):
+        rows = [
+            Candidate("Needs enrichment", "Example", "Synopsis", "Project", "url", "NIH"),
+            Candidate("Ready row", "Example", "Synopsis", "Project", "url", "PubMed", email="pi@example.edu"),
+        ]
+        self.assertEqual([row.name for row in prioritize_email_candidates(rows)], ["Ready row", "Needs enrichment"])
+
     def test_europe_pmc_author_match_uses_first_and_last_name(self):
         self.assertTrue(same_researcher("Hui Mao", {"firstName": "Hui", "lastName": "Mao"}))
         self.assertFalse(same_researcher("Hui Mao", {"firstName": "Jing", "lastName": "Mao"}))
@@ -84,6 +98,40 @@ class SearchHelpersTest(unittest.TestCase):
         gate.wait("https://example.edu/profile")
         gate.wait("https://api.reporter.nih.gov/v2/projects/search")
         self.assertEqual(sleeps, [1.0])
+
+    def test_resume_validation_accepts_pdf_bytes(self):
+        encoded = base64.b64encode(b"%PDF-1.4 resume").decode("ascii")
+        filename, resume = validate_resume_pdf("student-cv.pdf", encoded)
+        self.assertEqual(filename, "student-cv.pdf")
+        self.assertTrue(resume.startswith(b"%PDF"))
+
+    def test_resume_validation_rejects_non_pdf(self):
+        encoded = base64.b64encode(b"plain text").decode("ascii")
+        with self.assertRaisesRegex(ValueError, "valid PDF"):
+            validate_resume_pdf("resume.pdf", encoded)
+
+    def test_draft_helpers_parse_responses_payload(self):
+        text = openai_output_text(
+            {"output": [{"content": [{"type": "output_text", "text": '{"subject":"Hello","body":"Body"}'}]}]}
+        )
+        self.assertEqual(parse_draft_json(text), {"subject": "Hello", "body": "Body"})
+
+    def test_draft_prompt_uses_pi_and_search_context(self):
+        prompt = build_draft_prompt(
+            {
+                "name": "A. PI",
+                "institution": "Example School",
+                "email": "pi@example.edu",
+                "synopsis": "Studies tumor immunity.",
+            },
+            "brain tumor biomarkers",
+        )
+        self.assertIn("A. PI", prompt)
+        self.assertIn("brain tumor biomarkers", prompt)
+
+    def test_draft_tone_allows_dropdown_values_only(self):
+        self.assertEqual(draft_tone("friendly"), "friendly")
+        self.assertEqual(draft_tone("dramatic"), "warm")
 
 
 if __name__ == "__main__":

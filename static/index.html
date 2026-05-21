@@ -12,6 +12,7 @@
         <div class="search-copy">
           <p class="eyebrow">Research discovery</p>
           <h1 id="title">Lab Google</h1>
+          <p class="maker-note">Made by Sri, a lazy undergrad who wanted to know who to contact for research interests.</p>
           <form id="search-form">
             <label for="query">Condition or research interest</label>
             <textarea
@@ -27,10 +28,6 @@
                 <input id="limit" name="limit" type="number" min="1" max="15" value="8" />
               </label>
               <label class="toggle">
-                <input id="enrich" name="enrich" type="checkbox" checked />
-                <span>Enrich lab pages</span>
-              </label>
-              <label class="toggle">
                 <input id="prestigious" name="prestigious" type="checkbox" />
                 <span>Powerhouse</span>
               </label>
@@ -39,6 +36,16 @@
               </button>
             </div>
           </form>
+          <section class="resume-bar" aria-labelledby="resume-title">
+            <div>
+              <h2 id="resume-title">Email drafts</h2>
+              <p id="resume-status">Upload one PDF resume or CV for this page session.</p>
+            </div>
+            <label class="upload-button">
+              <input id="resume" type="file" accept="application/pdf,.pdf" />
+              <span>Upload resume</span>
+            </label>
+          </section>
         </div>
         <img class="search-image" src="/research-map.png" alt="" />
       </section>
@@ -59,17 +66,54 @@
                 <th scope="col">Undergraduate or medical student researchers</th>
                 <th scope="col">Email</th>
                 <th scope="col">Research synopsis</th>
+                <th scope="col">Draft</th>
               </tr>
             </thead>
             <tbody id="results">
               <tr class="empty">
-                <td colspan="6">Results will appear here with linked source pages.</td>
+                <td colspan="7">Results will appear here with linked source pages.</td>
               </tr>
             </tbody>
           </table>
         </div>
       </section>
     </main>
+    <dialog id="draft-dialog">
+      <form method="dialog" class="dialog-head">
+        <h2>Outreach draft</h2>
+        <button class="icon-button" type="submit" aria-label="Close draft">Close</button>
+      </form>
+      <p id="draft-recipient" class="draft-recipient"></p>
+      <p id="draft-error" class="draft-error" hidden></p>
+      <div class="draft-setup">
+        <label class="draft-field">
+          <span>OpenAI API key</span>
+          <input id="draft-api-key" type="password" autocomplete="off" placeholder="sk-..." />
+        </label>
+        <label class="draft-field">
+          <span>Tone</span>
+          <select id="draft-tone">
+            <option value="warm">Warm</option>
+            <option value="friendly">Friendly</option>
+            <option value="professional">Professional</option>
+          </select>
+        </label>
+      </div>
+      <div class="draft-generate">
+        <button id="generate-draft" type="button">Generate draft</button>
+      </div>
+      <label class="draft-field">
+        <span>Subject</span>
+        <input id="draft-subject" type="text" readonly />
+      </label>
+      <label class="draft-field">
+        <span>Message</span>
+        <textarea id="draft-body" rows="12" readonly></textarea>
+      </label>
+      <div class="dialog-actions">
+        <button id="copy-draft" type="button" disabled>Copy draft</button>
+      </div>
+    </dialog>
     <script src="/app.js"></script>
   </body>
 </html>
