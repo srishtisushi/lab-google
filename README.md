@@ -1,6 +1,6 @@
 # Lab Google
 
-`Lab Google` is a local prototype for turning a condition or short research-interest description into a PI table.
+`Lab Google` is a local prototype for turning a condition or short research-interest description into a PI table : https://lab-google.onrender.com
 
 The first pass uses:
 
